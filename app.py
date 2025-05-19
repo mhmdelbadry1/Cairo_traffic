@@ -683,9 +683,9 @@ elif module == "Public Transit Optimization":
                             st.metric("Recommended Stops", len(optimized_route), delta=len(optimized_route) - len(stations))
                         
                         if route_type == "bus" and "resources" in optimized_performance:
-                            st.metric("Recommended Buses", optimized_performance['resources'], delta=optimized_performance['resources'] - bus_count)
+                            bus_count = bus_routes[bus_routes['RouteID'] == route_id].iloc[0]['Buses Assigned']
+                            st.metric("Recommended Buses", optimized_performance['resources'], delta=int(optimized_performance['resources'] - bus_count))
                             st.metric("Projected Passengers per Bus", f"{optimized_performance.get('passengers', passengers) / optimized_performance['resources']:.1f}")
-                    
                     # Suggested changes
                     if suggested_changes:
                         st.subheader("Recommended Changes")
