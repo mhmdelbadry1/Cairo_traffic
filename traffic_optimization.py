@@ -1,14 +1,14 @@
 import folium
 import networkx as nx
-import numpy as np
 from collections import defaultdict
 
 def optimize_traffic_flow(neighborhoods, facilities, existing_roads, traffic_flow, 
                          from_id, to_id, time_column="Morning Peak(veh/h)",
                          consider_traffic=True, congestion_factor=1.5, 
-                         consider_road_quality=True):
+                         consider_road_quality=True, max_alternatives=3, diversity_threshold=0.3):
     """
-    Optimize traffic flow using Dijkstra's algorithm with time-dependent modifications.
+    Optimize traffic flow using Dijkstra's algorithm with time-dependent modifications
+    and enhanced alternative route generation with proper G_alt handling.
     
     Args:
         neighborhoods (DataFrame): Neighborhoods and districts data
@@ -21,10 +21,12 @@ def optimize_traffic_flow(neighborhoods, facilities, existing_roads, traffic_flo
         consider_traffic (bool): Whether to consider traffic in route calculations
         congestion_factor (float): Factor for how much traffic affects travel time
         consider_road_quality (bool): Whether to consider road quality
+        max_alternatives (int): Maximum number of alternative paths to return
+        diversity_threshold (float): Minimum fraction of edges that must differ from optimal path
         
     Returns:
         tuple: (optimal_path, optimal_distance, optimal_time, 
-                alternative_path, alternative_distance, alternative_time, error_message)
+                alternative_paths, alternative_distances, alternative_times, error_message)
     """
     G = nx.Graph()
     
@@ -80,38 +82,71 @@ def optimize_traffic_flow(neighborhoods, facilities, existing_roads, traffic_flo
         optimal_time = sum(G.get_edge_data(optimal_path[i], optimal_path[i+1])['time'] 
                           for i in range(len(optimal_path)-1))
         
-        # Alternative path: Remove one edge from optimal path to force a different route
-        G_alt = G.copy()
-        if len(optimal_path) > 2:
-            # Remove the first edge after the start node
-            u, v = optimal_path[1], optimal_path[2]
-            G_alt.remove_edge(u, v)
+        # Generate alternative paths
+        alternative_paths = []
+        alternative_distances = []
+        alternative_times = []
+        optimal_edges = set((min(optimal_path[i], optimal_path[i+1]), max(optimal_path[i], optimal_path[i+1])) 
+                           for i in range(len(optimal_path)-1))
+        excluded_edges = set()  # Track edges excluded across iterations
         
-        try:
-            alternative_path = nx.shortest_path(G_alt, source=from_id, target=to_id, weight='time')
-            alternative_distance = sum(G.get_edge_data(alternative_path[i], alternative_path[i+1])['distance'] 
-                                     for i in range(len(alternative_path)-1))
-            alternative_time = sum(G.get_edge_data(alternative_path[i], alternative_path[i+1])['time'] 
-                                  for i in range(len(alternative_path)-1))
-        except nx.NetworkXNoPath:
-            alternative_path = []
-            alternative_distance = 0
-            alternative_time = 0
+        for i in range(max_alternatives):
+            # Create a fresh copy of the graph for each alternative path
+            G_alt = G.copy()
+            # Remove edges from the optimal path one at a time, ensuring diversity
+            if i < len(optimal_path) - 1:
+                u, v = optimal_path[i], optimal_path[i+1]
+                edge = (min(u, v), max(u, v))
+                if edge not in excluded_edges:
+                    G_alt.remove_edge(u, v)
+                    excluded_edges.add(edge)
+            
+            try:
+                # Find a new path in the modified graph
+                alt_path = nx.shortest_path(G_alt, source=from_id, target=to_id, weight='time')
+                alt_edges = set((min(alt_path[j], alt_path[j+1]), max(alt_path[j], alt_path[j+1])) 
+                               for j in range(len(alt_path)-1))
+                
+                # Check diversity: ensure the alternative path differs sufficiently
+                common_edges = optimal_edges.intersection(alt_edges)
+                diversity = 1.0 - (len(common_edges) / max(len(optimal_edges), len(alt_edges)))
+                if (diversity >= diversity_threshold or not alternative_paths) and alt_path not in alternative_paths:
+                    alt_distance = sum(G.get_edge_data(alt_path[j], alt_path[j+1])['distance'] 
+                                      for j in range(len(alt_path)-1))
+                    alt_time = sum(G.get_edge_data(alt_path[j], alt_path[j+1])['time'] 
+                                  for j in range(len(alt_path)-1))
+                    alternative_paths.append(alt_path)
+                    alternative_distances.append(alt_distance)
+                    alternative_times.append(alt_time)
+            
+            except nx.NetworkXNoPath:
+                continue
         
-        return optimal_path, optimal_distance, optimal_time, alternative_path, alternative_distance, alternative_time, None
+        return (optimal_path, optimal_distance, optimal_time, 
+                alternative_paths, alternative_distances, alternative_times, None)
     
     except nx.NetworkXNoPath:
-        return [], 0, 0, [], 0, 0, "No path exists between the selected origin and destination."
+        return [], 0, 0, [], [], [], "No path exists between the selected origin and destination."
 
-def plot_map(neighborhoods, facilities, existing_roads, new_roads=None, show_traffic=False, 
-             traffic_data=None, highlight_emergency=False, highlight_transit=False, transit_stops=None):
+def plot_map(neighborhoods, facilities, existing_roads, optimal_path=None, 
+             alternative_paths=None, optimal_distance=None, optimal_time=None, 
+             alternative_distances=None, alternative_times=None, new_roads=None, 
+             show_traffic=False, traffic_data=None, highlight_emergency=False, 
+             highlight_transit=False, transit_stops=None):
     """
-    Plot a map with neighborhoods, facilities, roads, and optional traffic visualization.
+    Plot a map with neighborhoods, facilities, roads, and optional traffic visualization,
+    highlighting optimal and alternative paths.
     
     Args:
         neighborhoods (DataFrame): Neighborhood data
         facilities (DataFrame): Facility data
         existing_roads (DataFrame): Existing roads data
+        optimal_path (list): Optimal path nodes from optimize_traffic_flow
+        alternative_paths (list): List of alternative path nodes
+        optimal_distance (float): Total distance of optimal path
+        optimal_time (float): Total travel time of optimal path
+        alternative_distances (list): List of distances for alternative paths
+        alternative_times (list): List of travel times for alternative paths
         new_roads (list): List of new road tuples (from_id, to_id)
         show_traffic (bool): Whether to color roads based on traffic levels
         traffic_data (DataFrame): Traffic flow data
@@ -185,6 +220,33 @@ def plot_map(neighborhoods, facilities, existing_roads, new_roads=None, show_tra
                 weight=weight,
                 popup=f"Road: {road['FromID']} to {road['ToID']}<br>Distance: {road['Distance(km)']:.1f} km"
             ).add_to(m)
+    
+    # Add optimal path
+    if optimal_path and optimal_distance is not None and optimal_time is not None:
+        path_locations = [pos_lookup.get(node) for node in optimal_path if pos_lookup.get(node)]
+        if len(path_locations) == len(optimal_path):
+            folium.PolyLine(
+                locations=path_locations,
+                color='blue',
+                weight=5,
+                opacity=0.8,
+                popup=f"Optimal Path<br>Distance: {optimal_distance:.1f} km<br>Time: {optimal_time:.1f} min"
+            ).add_to(m)
+    
+    # Add alternative paths
+    if alternative_paths and alternative_distances and alternative_times:
+        colors = ['green', 'yellow', 'red']  # Distinct colors for up to 3 alternative paths
+        for i, (path, dist, time) in enumerate(zip(alternative_paths, alternative_distances, alternative_times)):
+            path_locations = [pos_lookup.get(node) for node in path if pos_lookup.get(node)]
+            if len(path_locations) == len(path):
+                folium.PolyLine(
+                    locations=path_locations,
+                    color=colors[i % len(colors)],
+                    weight=4,
+                    opacity=0.7,
+                    dash_array='5, 5',
+                    popup=f"Alternative Path {i+1}<br>Distance: {dist:.1f} km<br>Time: {time:.1f} min"
+                ).add_to(m)
     
     # Add new roads
     if new_roads:
