@@ -5,10 +5,9 @@ from collections import defaultdict
 def optimize_traffic_flow(neighborhoods, facilities, existing_roads, traffic_flow, 
                          from_id, to_id, time_column="Morning Peak(veh/h)",
                          consider_traffic=True, congestion_factor=1.5, 
-                         consider_road_quality=True, max_alternatives=3, diversity_threshold=0.3):
+                         consider_road_quality=True, max_alternatives=3):
     """
-    Optimize traffic flow using Dijkstra's algorithm with time-dependent modifications
-    and enhanced alternative route generation with proper G_alt handling.
+    Optimize traffic flow using Dijkstra's algorithm with simplified alternative route generation.
     
     Args:
         neighborhoods (DataFrame): Neighborhoods and districts data
@@ -22,7 +21,6 @@ def optimize_traffic_flow(neighborhoods, facilities, existing_roads, traffic_flo
         congestion_factor (float): Factor for how much traffic affects travel time
         consider_road_quality (bool): Whether to consider road quality
         max_alternatives (int): Maximum number of alternative paths to return
-        diversity_threshold (float): Minimum fraction of edges that must differ from optimal path
         
     Returns:
         tuple: (optimal_path, optimal_distance, optimal_time, 
@@ -86,31 +84,19 @@ def optimize_traffic_flow(neighborhoods, facilities, existing_roads, traffic_flo
         alternative_paths = []
         alternative_distances = []
         alternative_times = []
-        optimal_edges = set((min(optimal_path[i], optimal_path[i+1]), max(optimal_path[i], optimal_path[i+1])) 
-                           for i in range(len(optimal_path)-1))
-        excluded_edges = set()  # Track edges excluded across iterations
         
-        for i in range(max_alternatives):
+        for i in range(min(max_alternatives, len(optimal_path)-1)):
             # Create a fresh copy of the graph for each alternative path
             G_alt = G.copy()
-            # Remove edges from the optimal path one at a time, ensuring diversity
+            # Remove one edge from the optimal path
             if i < len(optimal_path) - 1:
                 u, v = optimal_path[i], optimal_path[i+1]
-                edge = (min(u, v), max(u, v))
-                if edge not in excluded_edges:
-                    G_alt.remove_edge(u, v)
-                    excluded_edges.add(edge)
+                G_alt.remove_edge(u, v)
             
             try:
                 # Find a new path in the modified graph
                 alt_path = nx.shortest_path(G_alt, source=from_id, target=to_id, weight='time')
-                alt_edges = set((min(alt_path[j], alt_path[j+1]), max(alt_path[j], alt_path[j+1])) 
-                               for j in range(len(alt_path)-1))
-                
-                # Check diversity: ensure the alternative path differs sufficiently
-                common_edges = optimal_edges.intersection(alt_edges)
-                diversity = 1.0 - (len(common_edges) / max(len(optimal_edges), len(alt_edges)))
-                if (diversity >= diversity_threshold or not alternative_paths) and alt_path not in alternative_paths:
+                if alt_path not in alternative_paths and alt_path != optimal_path:
                     alt_distance = sum(G.get_edge_data(alt_path[j], alt_path[j+1])['distance'] 
                                       for j in range(len(alt_path)-1))
                     alt_time = sum(G.get_edge_data(alt_path[j], alt_path[j+1])['time'] 
