@@ -123,7 +123,7 @@ def create_mst_network(neighborhoods, facilities, existing_roads, potential_road
         if algorithm_choice == "kruskal":
             mst_edges = nx.minimum_spanning_edges(G_potential, weight='weight', data=True)
         else:  # Prim's
-            mst_edges = list(nx.minimum_spanning_edges(G_potential, weight='weight', data=True))
+            mst_edges = list(nx.minimum_spanning_edges(G_potential,"prim", weight='weight', data=True))
 
         # Add potential roads within budget
         sorted_edges = sorted(mst_edges, key=lambda x: x[2]['cost'] / x[2]['distance'] if x[2]['cost'] > 0 else float('inf'))
